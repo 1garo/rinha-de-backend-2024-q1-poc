@@ -2,8 +2,10 @@ version: "3.5"
 
 services:
   api01: &api
-    image: zanfranceschi/rinha-2024q1-crebito
     hostname: api01
+    build:
+      dockerfile: Dockerfile
+      context: .
     environment:
       - DB_HOSTNAME=db
       - PORT=3000
@@ -25,7 +27,7 @@ services:
       - PORT=3000
     ports:
       - "3002:3000"
-  
+
   nginx:
     image: nginx:latest
     volumes:

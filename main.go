@@ -76,6 +76,7 @@ O corpo da resposta nesse caso não será testado e você pode escolher como o r
 Já sabe o que acontece se sua API retornar algo na faixa 2XX, né? Agradecido.
 */
 func statement(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("[REQUEST]: statement")
 	var err error
 	var response []byte
 
@@ -133,7 +134,7 @@ func main() {
 	m.HandleFunc("/clientes/{id}/transacoes", transaction).Methods("POST")
 
 	http.Handle("/", m)
-	err := http.ListenAndServe(":3333", nil)
+	err := http.ListenAndServe(":3000", nil)
 	if errors.Is(err, http.ErrServerClosed) {
 		fmt.Printf("server closed\n")
 	} else if err != nil {
