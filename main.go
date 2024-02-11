@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,16 @@ import (
 
 	"github.com/gorilla/mux"
 )
+
+type RinhaHandler struct {
+	db *sql.DB
+}
+
+func NewRinhaHandler(db *sql.DB) *RinhaHandler {
+	return &RinhaHandler{
+		db: db,
+	}
+}
 
 /*
 Regras Uma transação de débito nunca pode deixar o saldo do cliente menor que seu limite disponível.
@@ -26,14 +37,14 @@ O corpo da resposta nesse caso não será testado e você pode escolher como o r
 Se a API retornar algo como HTTP 200 informando que o cliente não foi encontrado no corpo da resposta ou HTTP 204 sem corpo,
 ficarei extremamente deprimido e a Rinha será cancelada para sempre.
 */
-func transaction(w http.ResponseWriter, r *http.Request) {
+func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 	var err error
 	var response []byte
 
 	w.Header().Set("Content-Type", "application/json")
 
 	vars := mux.Vars(r)
-	_, err = strconv.Atoi(vars["id"])
+	id, err := strconv.Atoi(vars["id"])
 	if err != nil {
 		log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
 
@@ -55,16 +66,61 @@ func transaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if input.Type == "d" {
+		// TODO: add value to balance
+		// Query:
+		/*
+			UPDATE "saldos"
+			SET valor = valor - 100000
+			from (select limite from "clientes" WHERE clientes.id = 1)
+			where cliente_id = 1
+			  AND abs(saldos.valor - 100000) <= limite;
+		*/
+		value := input.Value * 100
+		result, err := rh.db.Exec(`
+			UPDATE "saldos"
+			SET valor = valor - ?
+			from (select limite from "clientes" WHERE clientes.id = ?)
+			where cliente_id = ?
+			  AND abs(saldos.valor - ?) <= limite;
+			  `, value, id, id, value)
 
-	var resp TransactionResponse
-	resp.Balance = 10
-	resp.Limit = 10
-	if response, err = json.Marshal(resp); err != nil {
-		log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			log.Fatalln(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write(response)
+			return
+		}
+
+		if rowsAffected == 0 {
+			log.Println("[ERROR]: 0 rows affected on UPDATE.")
+
+			resp := make(map[string]string)
+			resp["error"] = "Unprocessable Content"
+
+			if response, err = json.Marshal(resp); err != nil {
+				log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
+			}
+
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			w.Write(response)
+			return
+		}
+
+	} else if input.Type == "c" {
+	} else {
+		resp := make(map[string]string)
+		resp["error"] = "Not supported type"
+
+		if response, err = json.Marshal(resp); err != nil {
+			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
+		}
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write(response)
 		return
 	}
+
 	w.WriteHeader(http.StatusOK)
 	w.Write(response)
 	return
@@ -75,7 +131,7 @@ Regras Se o atributo [id] da URL for de uma identificação não existente de cl
 O corpo da resposta nesse caso não será testado e você pode escolher como o representar.
 Já sabe o que acontece se sua API retornar algo na faixa 2XX, né? Agradecido.
 */
-func statement(w http.ResponseWriter, r *http.Request) {
+func (rh *RinhaHandler) statement(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("[REQUEST]: statement")
 	var err error
 	var response []byte
@@ -96,6 +152,7 @@ func statement(w http.ResponseWriter, r *http.Request) {
 		w.Write(response)
 		return
 	}
+	db := r.Context().Value("db")
 
 	resp := StatementResponse{
 		Balance: StatementBalance{
@@ -129,12 +186,21 @@ func statement(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	connStr := "postgresql://admin:123@localhost/rinha"
+	// Connect to database
+	db, err := sql.Open("postgres", connStr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Create the Store and Recipe Handler
+	handler := NewRinhaHandler(db)
+
 	m := mux.NewRouter()
-	m.HandleFunc("/clientes/{id}/extrato", statement).Methods("GET")
-	m.HandleFunc("/clientes/{id}/transacoes", transaction).Methods("POST")
+	m.HandleFunc("/clientes/{id}/extrato", handler.statement).Methods("GET")
+	m.HandleFunc("/clientes/{id}/transacoes", handler.transaction).Methods("POST")
 
 	http.Handle("/", m)
-	err := http.ListenAndServe(":3000", nil)
+	err = http.ListenAndServe(":3000", nil)
 	if errors.Is(err, http.ErrServerClosed) {
 		fmt.Printf("server closed\n")
 	} else if err != nil {

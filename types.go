@@ -8,7 +8,7 @@ type TransactionResponse struct {
 type TransactionInput struct {
 	// Value in cents
 	Value int `json:"valor"`
-	// Type: "c" = credito | "d" = debito
+	// Type: "c" = + credito | "d" = - debito
 	Type        string `json:"tipo"`
 	// Description length 1..10
 	Description string `json:"descricao"`
