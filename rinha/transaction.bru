@@ -5,7 +5,15 @@ meta {
 }
 
 post {
-  url: 
-  body: none
+  url: http://localhost:3000/clientes/1/transacoes
+  body: json
   auth: none
+}
+
+body:json {
+  {
+      "valor": 100000,
+      "tipo" : "d",
+      "descricao" : "descricaodescricaodescricao"
+  }
 }

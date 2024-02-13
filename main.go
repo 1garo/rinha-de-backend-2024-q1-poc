@@ -11,18 +11,10 @@ import (
 	"strconv"
 	"time"
 
+	_ "github.com/lib/pq"
+
 	"github.com/gorilla/mux"
 )
-
-type RinhaHandler struct {
-	db *sql.DB
-}
-
-func NewRinhaHandler(db *sql.DB) *RinhaHandler {
-	return &RinhaHandler{
-		db: db,
-	}
-}
 
 /*
 Regras Uma transação de débito nunca pode deixar o saldo do cliente menor que seu limite disponível.
@@ -40,7 +32,6 @@ ficarei extremamente deprimido e a Rinha será cancelada para sempre.
 func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 	var err error
 	var response []byte
-
 	w.Header().Set("Content-Type", "application/json")
 
 	vars := mux.Vars(r)
@@ -59,6 +50,25 @@ func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var clienteIDExists bool
+	err = rh.db.QueryRow("SELECT EXISTS(SELECT 1 FROM clientes WHERE id = $1)", id).Scan(&clienteIDExists)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if !clienteIDExists {
+		resp := make(map[string]string)
+		resp["error"] = "Not Found"
+
+		if response, err = json.Marshal(resp); err != nil {
+			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
+		}
+		w.WriteHeader(http.StatusNotFound)
+		w.Write(response)
+		return
+	}
+
+
 	var input TransactionInput
 	err = json.NewDecoder(r.Body).Decode(&input)
 	if err != nil {
@@ -66,38 +76,35 @@ func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if input.Type == "d" {
-		// TODO: add value to balance
-		// Query:
-		/*
-			UPDATE "saldos"
-			SET valor = valor - 100000
-			from (select limite from "clientes" WHERE clientes.id = 1)
-			where cliente_id = 1
-			  AND abs(saldos.valor - 100000) <= limite;
-		*/
-		value := input.Value * 100
-		result, err := rh.db.Exec(`
-			UPDATE "saldos"
-			SET valor = valor - ?
-			from (select limite from "clientes" WHERE clientes.id = ?)
-			where cliente_id = ?
-			  AND abs(saldos.valor - ?) <= limite;
-			  `, value, id, id, value)
+	if 1 < len(input.Description) && len(input.Description) > 10 {
+		resp := make(map[string]string)
+		resp["error"] = "Bad Request"
 
-		rowsAffected, err := result.RowsAffected()
-		if err != nil {
-			log.Fatalln(err)
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write(response)
-			return
+		if response, err = json.Marshal(resp); err != nil {
+			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
 		}
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(response)
+		return
+	}
 
-		if rowsAffected == 0 {
-			log.Println("[ERROR]: 0 rows affected on UPDATE.")
+	if input.Type == "d" {
+		// TODO: remove value from balance
+		var limite, saldo int
+		err = rh.db.QueryRow(`
+			UPDATE saldos
+			SET valor = valor - $1
+			FROM (SELECT limite FROM clientes WHERE clientes.id = $2) AS cliente_limite
+			WHERE cliente_id = $3
+			  AND abs(saldos.valor - $4) <= cliente_limite.limite
+			RETURNING limite, valor;
+		`, input.Value, id, id, input.Value).Scan(&limite, &saldo)
+
+		if errors.Is(err, sql.ErrNoRows) {
+			log.Println("[ERROR]: No rows.")
 
 			resp := make(map[string]string)
-			resp["error"] = "Unprocessable Content"
+			resp["error"] = "Unprocessable Entity"
 
 			if response, err = json.Marshal(resp); err != nil {
 				log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
@@ -107,8 +114,22 @@ func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 			w.Write(response)
 			return
 		}
+		if err != nil {
+			log.Fatalf("query row: err %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write(response)
+			return
+		}
 
+		var resp TransactionResponse
+		resp.Limit = limite
+		resp.Balance = saldo
+
+		if response, err = json.Marshal(resp); err != nil {
+			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
+		}
 	} else if input.Type == "c" {
+		// TODO: add value to saldo
 	} else {
 		resp := make(map[string]string)
 		resp["error"] = "Not supported type"
@@ -152,7 +173,7 @@ func (rh *RinhaHandler) statement(w http.ResponseWriter, r *http.Request) {
 		w.Write(response)
 		return
 	}
-	db := r.Context().Value("db")
+	// db := r.Context().Value("db")
 
 	resp := StatementResponse{
 		Balance: StatementBalance{
@@ -186,12 +207,13 @@ func (rh *RinhaHandler) statement(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	connStr := "postgresql://admin:123@localhost/rinha"
+	connStr := "postgresql://admin:123@localhost:5432/rinha?sslmode=disable"
 	// Connect to database
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("could not open db: err %v", err)
 	}
+
 	// Create the Store and Recipe Handler
 	handler := NewRinhaHandler(db)
 
@@ -207,4 +229,5 @@ func main() {
 		fmt.Printf("error starting server: %s\n", err)
 		os.Exit(1)
 	}
+	fmt.Println("server started, listening on port 3000")
 }

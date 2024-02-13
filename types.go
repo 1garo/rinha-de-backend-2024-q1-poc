@@ -1,5 +1,7 @@
 package main
 
+import "database/sql"
+
 type TransactionResponse struct {
 	Limit   int `json:"limite"`
 	Balance int `json:"saldo"`
@@ -35,3 +37,14 @@ type StatementResponse struct {
 	Balance          StatementBalance           `json:"saldo"`
 	LastTransactions []StatementLastTransaction `json:"ultimas_transacoes"`
 }
+
+type RinhaHandler struct {
+	db *sql.DB
+}
+
+func NewRinhaHandler(db *sql.DB) *RinhaHandler {
+	return &RinhaHandler{
+		db: db,
+	}
+}
+
