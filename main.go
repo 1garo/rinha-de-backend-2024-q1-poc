@@ -1,7 +1,7 @@
 package main
 
 import (
-	"database/sql"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/lib/pq"
 
 	"github.com/gorilla/mux"
@@ -52,7 +54,7 @@ func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 
 	// TODO: put this validation on a function because its used twice
 	var clienteIDExists bool
-	err = rh.db.QueryRow("SELECT EXISTS(SELECT 1 FROM clientes WHERE id = $1)", id).Scan(&clienteIDExists)
+	err = rh.db.QueryRow(context.Background(), "SELECT EXISTS(SELECT 1 FROM clientes WHERE id = $1)", id).Scan(&clienteIDExists)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -108,26 +110,16 @@ func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 	if input.Type == "d" {
 		// TODO: remove value from balance
 		var limite, saldo int
-		stmt, err := rh.db.Prepare(`
+		err = rh.db.QueryRow(context.Background(), `
 			UPDATE saldos
 			SET valor = valor - $1
 			FROM (SELECT limite FROM clientes WHERE id = $2) AS cliente_limite
 			WHERE cliente_id = $3
 			  AND abs(saldos.valor - $4) <= cliente_limite.limite
 			RETURNING limite, valor;
-		`)
-		defer stmt.Close()
+		`, value, id, id, value).Scan(&limite, &saldo)
 
-		if err != nil {
-			log.Fatalf("query row: err %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write(response)
-			return
-		}
-
-		err = stmt.QueryRow(value, id, id, value).Scan(&limite, &saldo)
-
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			log.Println("[ERROR]: No rows.")
 
 			resp := make(map[string]string)
@@ -159,30 +151,15 @@ func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 	} else if input.Type == "c" {
 		// TODO: add value to saldo
 		var limite, saldo int
-		stmt, err := rh.db.Prepare(`
+		err = rh.db.QueryRow(context.Background(), `
 			UPDATE saldos
 			SET valor = valor + $1
 			FROM (SELECT limite FROM clientes WHERE id = $2)
 			WHERE cliente_id = $3
 			RETURNING limite, valor;
-		`)
-		defer stmt.Close()
+		`, value, id, id).Scan(&limite, &saldo)
 
-		if err != nil {
-			resp := make(map[string]string)
-			resp["error"] = "StatusUnprocessableEntity"
-
-			if response, err = json.Marshal(resp); err != nil {
-				log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
-			}
-			w.WriteHeader(http.StatusUnprocessableEntity)
-			w.Write(response)
-			return
-		}
-
-		err = stmt.QueryRow(value, id, id).Scan(&limite, &saldo)
-
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			log.Println("[ERROR]: No rows.")
 
 			resp := make(map[string]string)
@@ -229,7 +206,7 @@ func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = rh.db.Exec(
+	_, err = rh.db.Exec(context.Background(),
 		"insert into \"transacoes\"(cliente_id, valor, tipo, descricao) values($1, $2, $3, $4)",
 		id, value, input.Type, input.Description,
 	)
@@ -275,9 +252,9 @@ func (rh *RinhaHandler) statement(w http.ResponseWriter, r *http.Request) {
 
 	// TODO: put this validation on a function because its used twice
 	var clienteIDExists bool
-	err = rh.db.QueryRow("SELECT EXISTS(SELECT 1 FROM clientes WHERE id = $1)", id).Scan(&clienteIDExists)
+	err = rh.db.QueryRow(context.Background(), "SELECT EXISTS(SELECT 1 FROM clientes WHERE id = $1)", id).Scan(&clienteIDExists)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Erro aqui: ", err)
 	}
 
 	if !clienteIDExists {
@@ -292,7 +269,7 @@ func (rh *RinhaHandler) statement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stmt, err := rh.db.Prepare(`
+	rows, err := rh.db.Query(context.Background(), `
 	select transacoes.valor, transacoes.realizada_em, transacoes.tipo, transacoes.descricao,
 			saldos.valor as total, clientes.limite
 		from "transacoes"
@@ -303,24 +280,18 @@ func (rh *RinhaHandler) statement(w http.ResponseWriter, r *http.Request) {
 		where transacoes.cliente_id = $3
 		order by transacoes.realizada_em DESC
 		LIMIT 10
-		`)
-	defer stmt.Close()
-
-	if err != nil {
-		log.Printf("error while trying to get statements, %v\n", err)
-		return
-	}
-
-	rows, err := stmt.Query(id, id, id)
+		`, id, id, id)
 	defer rows.Close()
 
 	var statementResponse StatementResponse
+
 	for rows.Next() {
-		var value, total, limit int
-		var tipo, descricao, realizadaEm string
+		var value, total, limite int
+		var tipo, descricao string
+		var realizadaEm time.Time
 
 		// Scan values from the row into variables
-		err := rows.Scan(&value, &realizadaEm, &tipo, &descricao, &total, &limit)
+		err := rows.Scan(&value, &realizadaEm, &tipo, &descricao, &total, &limite)
 		if err != nil {
 			log.Fatal(err)
 			return
@@ -332,7 +303,7 @@ func (rh *RinhaHandler) statement(w http.ResponseWriter, r *http.Request) {
 			Total: total,
 			// You may need to format the date based on your specific requirements
 			Date:  time.Now().UTC().Format(time.RFC3339),
-			Limit: limit,
+			Limit: limite,
 		}
 
 		// Populate the StatementLastTransaction slice
@@ -356,13 +327,15 @@ func (rh *RinhaHandler) statement(w http.ResponseWriter, r *http.Request) {
 func main() {
 	connStr := "postgresql://admin:123@db:5432/rinha?sslmode=disable"
 	// Connect to database
-	db, err := sql.Open("postgres", connStr)
+	dbpool, err := pgxpool.New(context.Background(), connStr)
 	if err != nil {
-		log.Fatalf("could not open db: err %v", err)
+		fmt.Fprintf(os.Stderr, "Unable to create connection pool: %v\n", err)
+		os.Exit(1)
 	}
+	defer dbpool.Close()
 
 	// Create the Store and Recipe Handler
-	handler := NewRinhaHandler(db)
+	handler := NewRinhaHandler(dbpool)
 
 	m := mux.NewRouter()
 	m.HandleFunc("/clientes/{id}/extrato", handler.statement).Methods("GET")

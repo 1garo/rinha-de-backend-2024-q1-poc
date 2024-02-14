@@ -1,8 +1,10 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type TransactionResponse struct {
@@ -33,7 +35,7 @@ type StatementLastTransaction struct {
 	Type        string `json:"tipo"`
 	// Description length 1..10
 	Description string `json:"descricao"`
-	MadeAt      string `json:"realizada_em"`
+	MadeAt      time.Time `json:"realizada_em"`
 }
 
 type StatementResponse struct {
@@ -42,10 +44,10 @@ type StatementResponse struct {
 }
 
 type RinhaHandler struct {
-	db *sql.DB
+	db *pgxpool.Pool
 }
 
-func NewRinhaHandler(db *sql.DB) *RinhaHandler {
+func NewRinhaHandler(db *pgxpool.Pool) *RinhaHandler {
 	return &RinhaHandler{
 		db: db,
 	}
