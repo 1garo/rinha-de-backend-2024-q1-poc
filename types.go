@@ -1,6 +1,9 @@
 package main
 
-import "database/sql"
+import (
+	"database/sql"
+	"encoding/json"
+)
 
 type TransactionResponse struct {
 	Limit   int `json:"limite"`
@@ -9,7 +12,7 @@ type TransactionResponse struct {
 
 type TransactionInput struct {
 	// Value in cents
-	Value int `json:"valor"`
+	Value json.Number `json:"valor"`
 	// Type: "c" = + credito | "d" = - debito
 	Type        string `json:"tipo"`
 	// Description length 1..10

@@ -40,16 +40,17 @@ func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
 
 		resp := make(map[string]string)
-		resp["error"] = "Bad Request"
+		resp["error"] = "Internal Server Error"
 
 		if response, err = json.Marshal(resp); err != nil {
 			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
 		}
-		w.WriteHeader(http.StatusBadRequest)
+		w.WriteHeader(http.StatusInternalServerError)
 		w.Write(response)
 		return
 	}
 
+	// TODO: put this validation on a function because its used twice
 	var clienteIDExists bool
 	err = rh.db.QueryRow("SELECT EXISTS(SELECT 1 FROM clientes WHERE id = $1)", id).Scan(&clienteIDExists)
 	if err != nil {
@@ -72,33 +73,59 @@ func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 	var input TransactionInput
 	err = json.NewDecoder(r.Body).Decode(&input)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		log.Println("decode Transaction input")
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	if 1 < len(input.Description) && len(input.Description) > 10 {
+	value, err := input.Value.Int64()
+	if value == 0 {
 		resp := make(map[string]string)
-		resp["error"] = "Bad Request"
+		resp["error"] = "StatusUnprocessableEntity"
 
 		if response, err = json.Marshal(resp); err != nil {
 			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
 		}
-		w.WriteHeader(http.StatusBadRequest)
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		w.Write(response)
+		return
+
+	}
+
+	if len(input.Description) < 1 || len(input.Description) > 10 {
+		resp := make(map[string]string)
+		resp["error"] = "StatusUnprocessableEntity"
+
+		if response, err = json.Marshal(resp); err != nil {
+			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
+		}
+		w.WriteHeader(http.StatusUnprocessableEntity)
 		w.Write(response)
 		return
 	}
 
+
 	if input.Type == "d" {
 		// TODO: remove value from balance
 		var limite, saldo int
-		err = rh.db.QueryRow(`
+		stmt, err := rh.db.Prepare(`
 			UPDATE saldos
 			SET valor = valor - $1
-			FROM (SELECT limite FROM clientes WHERE clientes.id = $2) AS cliente_limite
+			FROM (SELECT limite FROM clientes WHERE id = $2) AS cliente_limite
 			WHERE cliente_id = $3
 			  AND abs(saldos.valor - $4) <= cliente_limite.limite
 			RETURNING limite, valor;
-		`, input.Value, id, id, input.Value).Scan(&limite, &saldo)
+		`)
+		defer stmt.Close()
+
+		if err != nil {
+			log.Fatalf("query row: err %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write(response)
+			return
+		}
+
+		err = stmt.QueryRow(value, id, id, value).Scan(&limite, &saldo)
 
 		if errors.Is(err, sql.ErrNoRows) {
 			log.Println("[ERROR]: No rows.")
@@ -114,6 +141,7 @@ func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 			w.Write(response)
 			return
 		}
+
 		if err != nil {
 			log.Fatalf("query row: err %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -130,14 +158,85 @@ func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if input.Type == "c" {
 		// TODO: add value to saldo
-	} else {
-		resp := make(map[string]string)
-		resp["error"] = "Not supported type"
+		var limite, saldo int
+		stmt, err := rh.db.Prepare(`
+			UPDATE saldos
+			SET valor = valor + $1
+			FROM (SELECT limite FROM clientes WHERE id = $2)
+			WHERE cliente_id = $3
+			RETURNING limite, valor;
+		`)
+		defer stmt.Close()
+
+		if err != nil {
+			resp := make(map[string]string)
+			resp["error"] = "StatusUnprocessableEntity"
+
+			if response, err = json.Marshal(resp); err != nil {
+				log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
+			}
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			w.Write(response)
+			return
+		}
+
+		err = stmt.QueryRow(value, id, id).Scan(&limite, &saldo)
+
+		if errors.Is(err, sql.ErrNoRows) {
+			log.Println("[ERROR]: No rows.")
+
+			resp := make(map[string]string)
+			resp["error"] = "Unprocessable Entity"
+
+			if response, err = json.Marshal(resp); err != nil {
+				log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
+			}
+
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			w.Write(response)
+			return
+		}
+
+		if err != nil {
+			resp := make(map[string]string)
+			resp["error"] = "StatusUnprocessableEntity"
+
+			if response, err = json.Marshal(resp); err != nil {
+				log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
+			}
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			w.Write(response)
+			return
+		}
+
+		var resp TransactionResponse
+		resp.Limit = limite
+		resp.Balance = saldo
 
 		if response, err = json.Marshal(resp); err != nil {
 			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
 		}
-		w.WriteHeader(http.StatusBadRequest)
+	} else {
+		resp := make(map[string]string)
+		resp["error"] = "unprocessable entity"
+
+		if response, err = json.Marshal(resp); err != nil {
+			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
+		}
+
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		w.Write(response)
+		return
+	}
+
+	_, err = rh.db.Exec(
+		"insert into \"transacoes\"(cliente_id, valor, tipo, descricao) values($1, $2, $3, $4)",
+		id, value, input.Type, input.Description,
+	)
+
+	if err != nil {
+		log.Fatalf("query row: err %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
 		w.Write(response)
 		return
 	}
@@ -160,44 +259,92 @@ func (rh *RinhaHandler) statement(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	vars := mux.Vars(r)
-	_, err = strconv.Atoi(vars["id"])
+	id, err := strconv.Atoi(vars["id"])
 	if err != nil {
 		log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
 
 		resp := make(map[string]string)
-		resp["error"] = "Bad Request"
+		resp["error"] = "Internal Server Error"
 		if response, err = json.Marshal(resp); err != nil {
 			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
 		}
-		w.WriteHeader(http.StatusBadRequest)
+		w.WriteHeader(http.StatusInternalServerError)
 		w.Write(response)
 		return
 	}
-	// db := r.Context().Value("db")
 
-	resp := StatementResponse{
-		Balance: StatementBalance{
-			Total: -9098,
-			Date:  time.Now().UTC().Format(time.RFC3339),
-			Limit: 100000,
-		},
-		LastTransactions: []StatementLastTransaction{
-			{
-				Value:       10,
-				Type:        "c",
-				Description: "descricao",
-				MadeAt:      time.Now().UTC().Format(time.RFC3339),
-			},
-			{
-				Value:       10,
-				Type:        "d",
-				Description: "descricao",
-				MadeAt:      time.Now().UTC().Format(time.RFC3339),
-			},
-		},
+	// TODO: put this validation on a function because its used twice
+	var clienteIDExists bool
+	err = rh.db.QueryRow("SELECT EXISTS(SELECT 1 FROM clientes WHERE id = $1)", id).Scan(&clienteIDExists)
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	if response, err = json.Marshal(resp); err != nil {
+	if !clienteIDExists {
+		resp := make(map[string]string)
+		resp["error"] = "Not Found"
+
+		if response, err = json.Marshal(resp); err != nil {
+			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
+		}
+		w.WriteHeader(http.StatusNotFound)
+		w.Write(response)
+		return
+	}
+
+	stmt, err := rh.db.Prepare(`
+	select transacoes.valor, transacoes.realizada_em, transacoes.tipo, transacoes.descricao,
+			saldos.valor as total, clientes.limite
+		from "transacoes"
+
+		inner join "saldos" on saldos.cliente_id = $1
+		inner join "clientes" on clientes.id = $2
+
+		where transacoes.cliente_id = $3
+		order by transacoes.realizada_em DESC
+		LIMIT 10
+		`)
+	defer stmt.Close()
+
+	if err != nil {
+		log.Printf("error while trying to get statements, %v\n", err)
+		return
+	}
+
+	rows, err := stmt.Query(id, id, id)
+	defer rows.Close()
+
+	var statementResponse StatementResponse
+	for rows.Next() {
+		var value, total, limit int
+		var tipo, descricao, realizadaEm string
+
+		// Scan values from the row into variables
+		err := rows.Scan(&value, &realizadaEm, &tipo, &descricao, &total, &limit)
+		if err != nil {
+			log.Fatal(err)
+			return
+			//return statementResponse, err
+		}
+
+		// Populate the StatementBalance struct
+		statementResponse.Balance = StatementBalance{
+			Total: total,
+			// You may need to format the date based on your specific requirements
+			Date:  time.Now().UTC().Format(time.RFC3339),
+			Limit: limit,
+		}
+
+		// Populate the StatementLastTransaction slice
+		statementResponse.LastTransactions = append(statementResponse.LastTransactions, StatementLastTransaction{
+			Value:       value,
+			Type:        tipo,
+			Description: descricao,
+			MadeAt:      realizadaEm,
+		})
+	}
+
+	if response, err = json.Marshal(statementResponse); err != nil {
 		log.Printf("Error happened in JSON marshal. Err: %s", err)
 	}
 
@@ -207,7 +354,7 @@ func (rh *RinhaHandler) statement(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	connStr := "postgresql://admin:123@localhost:5432/rinha?sslmode=disable"
+	connStr := "postgresql://admin:123@db:5432/rinha?sslmode=disable"
 	// Connect to database
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
@@ -222,6 +369,7 @@ func main() {
 	m.HandleFunc("/clientes/{id}/transacoes", handler.transaction).Methods("POST")
 
 	http.Handle("/", m)
+	fmt.Println("listening on port 3000")
 	err = http.ListenAndServe(":3000", nil)
 	if errors.Is(err, http.ErrServerClosed) {
 		fmt.Printf("server closed\n")
@@ -229,5 +377,4 @@ func main() {
 		fmt.Printf("error starting server: %s\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("server started, listening on port 3000")
 }
