@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -270,28 +271,28 @@ func (rh *RinhaHandler) statement(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := rh.db.Query(context.Background(), `
-	select transacoes.valor, transacoes.realizada_em, transacoes.tipo, transacoes.descricao,
-			saldos.valor as total, clientes.limite
-		from "transacoes"
+		SELECT transacoes.valor, transacoes.realizada_em, transacoes.tipo, transacoes.descricao,
+			   saldos.valor as total, clientes.limite
+		FROM "clientes"
+		JOIN "saldos" ON saldos.cliente_id = clientes.id
+		LEFT JOIN "transacoes" ON transacoes.cliente_id = clientes.id  -- Use LEFT JOIN here
 
-		inner join "saldos" on saldos.cliente_id = $1
-		inner join "clientes" on clientes.id = $2
-
-		where transacoes.cliente_id = $3
-		order by transacoes.realizada_em DESC
+		WHERE clientes.id = $1  -- Add conditions for the specific client
+		ORDER BY transacoes.realizada_em DESC
 		LIMIT 10
-		`, id, id, id)
+		`, id)
 	defer rows.Close()
 
 	var statementResponse StatementResponse
 
 	for rows.Next() {
-		var value, total, limite int
-		var tipo, descricao string
-		var realizadaEm time.Time
+		var valueScan, totalScan, limiteScan sql.NullInt64
+		var tipoScan, descricaoScan sql.NullString
+		var realizadaEmScan sql.NullTime
+
 
 		// Scan values from the row into variables
-		err := rows.Scan(&value, &realizadaEm, &tipo, &descricao, &total, &limite)
+		err := rows.Scan(&valueScan, &realizadaEmScan, &tipoScan, &descricaoScan, &totalScan, &limiteScan)
 		if err != nil {
 			log.Fatal(err)
 			return
@@ -300,19 +301,27 @@ func (rh *RinhaHandler) statement(w http.ResponseWriter, r *http.Request) {
 
 		// Populate the StatementBalance struct
 		statementResponse.Balance = StatementBalance{
-			Total: total,
 			// You may need to format the date based on your specific requirements
 			Date:  time.Now().UTC().Format(time.RFC3339),
-			Limit: limite,
 		}
 
-		// Populate the StatementLastTransaction slice
-		statementResponse.LastTransactions = append(statementResponse.LastTransactions, StatementLastTransaction{
-			Value:       value,
-			Type:        tipo,
-			Description: descricao,
-			MadeAt:      realizadaEm,
-		})
+		if limiteScan.Valid {
+			statementResponse.Balance.Limit = int(limiteScan.Int64)
+		}
+
+		if totalScan.Valid {
+			statementResponse.Balance.Total = int(totalScan.Int64)
+		}
+
+		if realizadaEmScan.Valid && valueScan.Valid && tipoScan.Valid && descricaoScan.Valid {
+			// Populate the StatementLastTransaction slice
+			statementResponse.LastTransactions = append(statementResponse.LastTransactions, StatementLastTransaction{
+				Value:       int(valueScan.Int64),
+				Type:        string(tipoScan.String),
+				Description: string(descricaoScan.String),
+				MadeAt:      time.Time(realizadaEmScan.Time),
+			})
+		}
 	}
 
 	if response, err = json.Marshal(statementResponse); err != nil {
