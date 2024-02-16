@@ -3,9 +3,7 @@ version: "3.5"
 services:
   api01: &api
     hostname: api01
-    build:
-      dockerfile: Dockerfile
-      context: .
+    image: alevardai/rinha-poc:latest
     environment:
       - DB_HOSTNAME=db
       - PORT=3000
