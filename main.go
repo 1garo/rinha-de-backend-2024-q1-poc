@@ -16,7 +16,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/lib/pq"
 
-	"github.com/gorilla/mux"
+	"github.com/fasthttp/router"
+	"github.com/valyala/fasthttp"
 )
 
 /*
@@ -32,24 +33,67 @@ O corpo da resposta nesse caso não será testado e você pode escolher como o r
 Se a API retornar algo como HTTP 200 informando que o cliente não foi encontrado no corpo da resposta ou HTTP 204 sem corpo,
 ficarei extremamente deprimido e a Rinha será cancelada para sempre.
 */
-func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
+func (rh *RinhaHandler) transaction(ctx *fasthttp.RequestCtx) {
 	var err error
 	var response []byte
-	w.Header().Set("Content-Type", "application/json")
 
-	vars := mux.Vars(r)
-	id, err := strconv.Atoi(vars["id"])
+	ctx.SetContentType("application/json")
+
+	var input TransactionInput
+	err = json.Unmarshal(ctx.PostBody(), &input)
+	if err != nil {
+		log.Printf("[ERROR]: In JSON unmarshal. Err: %s\n", err)
+
+		resp := make(map[string]string)
+		resp["error"] = "Internal Server Error"
+		if response, err = json.Marshal(resp); err != nil {
+			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
+		}
+		ctx.SetStatusCode(http.StatusInternalServerError)
+		ctx.Write(response)
+		return
+	}
+
+	value, err := input.Value.Int64()
+	if value == 0 {
+		resp := make(map[string]string)
+		resp["error"] = "StatusUnprocessableEntity"
+
+		if response, err = json.Marshal(resp); err != nil {
+			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
+		}
+
+		ctx.SetStatusCode(http.StatusUnprocessableEntity)
+		ctx.Write(response)
+		return
+
+	}
+
+	if len(input.Description) < 1 || len(input.Description) > 10 {
+		resp := make(map[string]string)
+		resp["error"] = "StatusUnprocessableEntity"
+
+		if response, err = json.Marshal(resp); err != nil {
+			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
+		}
+
+		ctx.SetStatusCode(http.StatusUnprocessableEntity)
+		ctx.Write(response)
+		return
+	}
+
+	idStr := ctx.UserValue("id")
+	id, err := strconv.Atoi(idStr.(string))
 	if err != nil {
 		log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
 
 		resp := make(map[string]string)
 		resp["error"] = "Internal Server Error"
-
 		if response, err = json.Marshal(resp); err != nil {
 			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
 		}
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write(response)
+		ctx.SetStatusCode(http.StatusInternalServerError)
+		ctx.Write(response)
 		return
 	}
 
@@ -67,43 +111,8 @@ func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 		if response, err = json.Marshal(resp); err != nil {
 			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
 		}
-		w.WriteHeader(http.StatusNotFound)
-		w.Write(response)
-		return
-	}
-
-
-	var input TransactionInput
-	err = json.NewDecoder(r.Body).Decode(&input)
-	if err != nil {
-		log.Println("decode Transaction input")
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	value, err := input.Value.Int64()
-	if value == 0 {
-		resp := make(map[string]string)
-		resp["error"] = "StatusUnprocessableEntity"
-
-		if response, err = json.Marshal(resp); err != nil {
-			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
-		}
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		w.Write(response)
-		return
-
-	}
-
-	if len(input.Description) < 1 || len(input.Description) > 10 {
-		resp := make(map[string]string)
-		resp["error"] = "StatusUnprocessableEntity"
-
-		if response, err = json.Marshal(resp); err != nil {
-			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
-		}
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		w.Write(response)
+		ctx.SetStatusCode(http.StatusNotFound)
+		ctx.Write(response)
 		return
 	}
 
@@ -130,15 +139,15 @@ func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 				log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
 			}
 
-			w.WriteHeader(http.StatusUnprocessableEntity)
-			w.Write(response)
+			ctx.SetStatusCode(http.StatusUnprocessableEntity)
+			ctx.Write(response)
 			return
 		}
 
 		if err != nil {
-			log.Fatalf("query row: err %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write(response)
+			log.Printf("query row: err %v\n", err)
+			ctx.SetStatusCode(http.StatusInternalServerError)
+			ctx.Write(response)
 			return
 		}
 
@@ -170,8 +179,8 @@ func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 				log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
 			}
 
-			w.WriteHeader(http.StatusUnprocessableEntity)
-			w.Write(response)
+			ctx.SetStatusCode(http.StatusUnprocessableEntity)
+			ctx.Write(response)
 			return
 		}
 
@@ -182,8 +191,9 @@ func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 			if response, err = json.Marshal(resp); err != nil {
 				log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
 			}
-			w.WriteHeader(http.StatusUnprocessableEntity)
-			w.Write(response)
+
+			ctx.SetStatusCode(http.StatusUnprocessableEntity)
+			ctx.Write(response)
 			return
 		}
 
@@ -202,8 +212,8 @@ func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
 		}
 
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		w.Write(response)
+		ctx.SetStatusCode(http.StatusUnprocessableEntity)
+		ctx.Write(response)
 		return
 	}
 
@@ -213,14 +223,14 @@ func (rh *RinhaHandler) transaction(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err != nil {
-		log.Fatalf("query row: err %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write(response)
+		log.Printf("query row: err %v\n", err)
+		ctx.SetStatusCode(http.StatusInternalServerError)
+		ctx.Write(response)
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	w.Write(response)
+	ctx.SetStatusCode(http.StatusOK)
+	ctx.Write(response)
 	return
 }
 
@@ -229,15 +239,15 @@ Regras Se o atributo [id] da URL for de uma identificação não existente de cl
 O corpo da resposta nesse caso não será testado e você pode escolher como o representar.
 Já sabe o que acontece se sua API retornar algo na faixa 2XX, né? Agradecido.
 */
-func (rh *RinhaHandler) statement(w http.ResponseWriter, r *http.Request) {
+func (rh *RinhaHandler) statement(ctx *fasthttp.RequestCtx) {
 	fmt.Println("[REQUEST]: statement")
 	var err error
 	var response []byte
 
-	w.Header().Set("Content-Type", "application/json")
+	ctx.SetContentType("application/json")
 
-	vars := mux.Vars(r)
-	id, err := strconv.Atoi(vars["id"])
+	idStr := ctx.UserValue("id")
+	id, err := strconv.Atoi(idStr.(string))
 	if err != nil {
 		log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
 
@@ -246,8 +256,8 @@ func (rh *RinhaHandler) statement(w http.ResponseWriter, r *http.Request) {
 		if response, err = json.Marshal(resp); err != nil {
 			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
 		}
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write(response)
+		ctx.SetStatusCode(http.StatusInternalServerError)
+		ctx.Write(response)
 		return
 	}
 
@@ -265,8 +275,8 @@ func (rh *RinhaHandler) statement(w http.ResponseWriter, r *http.Request) {
 		if response, err = json.Marshal(resp); err != nil {
 			log.Printf("[ERROR]: In JSON marshal. Err: %s\n", err)
 		}
-		w.WriteHeader(http.StatusNotFound)
-		w.Write(response)
+		ctx.SetStatusCode(http.StatusNotFound)
+		ctx.Write(response)
 		return
 	}
 
@@ -290,19 +300,18 @@ func (rh *RinhaHandler) statement(w http.ResponseWriter, r *http.Request) {
 		var tipoScan, descricaoScan sql.NullString
 		var realizadaEmScan sql.NullTime
 
-
 		// Scan values from the row into variables
 		err := rows.Scan(&valueScan, &realizadaEmScan, &tipoScan, &descricaoScan, &totalScan, &limiteScan)
 		if err != nil {
 			log.Fatal(err)
 			return
-			//return statementResponse, err
+			// return statementResponse, err
 		}
 
 		// Populate the StatementBalance struct
 		statementResponse.Balance = StatementBalance{
 			// You may need to format the date based on your specific requirements
-			Date:  time.Now().UTC().Format(time.RFC3339),
+			Date: time.Now().UTC().Format(time.RFC3339),
 		}
 
 		if limiteScan.Valid {
@@ -328,8 +337,8 @@ func (rh *RinhaHandler) statement(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error happened in JSON marshal. Err: %s", err)
 	}
 
-	w.WriteHeader(http.StatusOK)
-	w.Write(response)
+	ctx.SetStatusCode(http.StatusOK)
+	ctx.Write(response)
 	return
 }
 
@@ -346,13 +355,12 @@ func main() {
 	// Create the Store and Recipe Handler
 	handler := NewRinhaHandler(dbpool)
 
-	m := mux.NewRouter()
-	m.HandleFunc("/clientes/{id}/extrato", handler.statement).Methods("GET")
-	m.HandleFunc("/clientes/{id}/transacoes", handler.transaction).Methods("POST")
+	r := router.New()
+	r.GET("/clientes/{id}/extrato", handler.statement)
+	r.POST("/clientes/{id}/transacoes", handler.transaction)
 
-	http.Handle("/", m)
 	fmt.Println("listening on port 3000")
-	err = http.ListenAndServe(":3000", nil)
+	err = fasthttp.ListenAndServe(":3000", r.Handler)
 	if errors.Is(err, http.ErrServerClosed) {
 		fmt.Printf("server closed\n")
 	} else if err != nil {
