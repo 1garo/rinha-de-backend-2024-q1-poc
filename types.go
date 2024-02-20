@@ -30,7 +30,7 @@ type StatementBalance struct {
 
 type StatementLastTransaction struct {
 	// Value in cents
-	Value int `json:"valor"`
+	Value int64 `json:"valor"`
 	// Type: "c" = credito | "d" = debito
 	Type        string `json:"tipo"`
 	// Description length 1..10

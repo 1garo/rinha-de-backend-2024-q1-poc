@@ -325,10 +325,10 @@ func (rh *RinhaHandler) statement(ctx *fasthttp.RequestCtx) {
 		if realizadaEmScan.Valid && valueScan.Valid && tipoScan.Valid && descricaoScan.Valid {
 			// Populate the StatementLastTransaction slice
 			statementResponse.LastTransactions = append(statementResponse.LastTransactions, StatementLastTransaction{
-				Value:       int(valueScan.Int64),
-				Type:        string(tipoScan.String),
-				Description: string(descricaoScan.String),
-				MadeAt:      time.Time(realizadaEmScan.Time),
+				Value:       valueScan.Int64,
+				Type:        tipoScan.String,
+				Description: descricaoScan.String,
+				MadeAt:      realizadaEmScan.Time,
 			})
 		}
 	}
